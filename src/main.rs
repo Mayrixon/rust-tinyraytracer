@@ -18,21 +18,29 @@ impl Light {
 
 #[derive(Clone, Copy)]
 struct Material {
+    albedo: [f64; 2],
     diffuse_color: vek::Rgb<f64>,
+    specular_exponent: f64,
 }
 
 impl Material {
-    fn new(color: vek::Rgb<f64>) -> Self {
+    fn new(albedo: [f64; 2], color: vek::Rgb<f64>, specular_exponent: f64) -> Self {
         Self {
+            albedo,
             diffuse_color: color,
+            specular_exponent,
         }
     }
 }
 
 impl Default for Material {
     fn default() -> Self {
+        let mut albedo = [0.; 2];
+        albedo[0] = 1.;
         Self {
+            albedo,
             diffuse_color: vek::Rgb::black(),
+            specular_exponent: 0.,
         }
     }
 }
@@ -72,6 +80,10 @@ impl Sphere {
     }
 }
 
+fn reflect(I: vek::Vec3<f64>, N: vek::Vec3<f64>) -> vek::Vec3<f64> {
+    return I - 2. * N * I.dot(N);
+}
+
 fn scene_intersect(
     orig: vek::Vec3<f64>,
     dir: vek::Vec3<f64>,
@@ -107,11 +119,18 @@ fn cast_ray(
         return vek::Rgb::new(0.2, 0.7, 0.8);
     } else {
         let mut diffuse_light_intensity: f64 = 0.;
+        let mut specular_light_intensity: f64 = 0.;
         for i in 0..lights.len() {
             let light_dir = (lights[i].position - point).normalized();
+
             diffuse_light_intensity += lights[i].intensity * light_dir.dot(N).max(0.);
+            specular_light_intensity += reflect(light_dir, N)
+                .dot(dir)
+                .max(0.)
+                .powf(material.specular_exponent);
         }
-        return material.diffuse_color * diffuse_light_intensity;
+        return material.diffuse_color * diffuse_light_intensity * material.albedo[0]
+            + vek::Rgb::white() * specular_light_intensity * material.albedo[1];
     }
 }
 
@@ -141,8 +160,13 @@ fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
 
     for i in 0..HEIGHT {
         for j in 0..WIDTH {
+            let c = framebuffer[i][j];
+            let max = c[0].max(c[1].max(c[2]));
+            if max > 1. {
+                let c = c * (1. / max);
+            }
             for k in 0..3 {
-                let a = (255. * (framebuffer[i][j][k]).min(1.).max(0.)) as u8;
+                let a = (255. * c[k].min(1.).max(0.)) as u8;
                 buffer.write(&[a]).unwrap();
             }
         }
@@ -151,8 +175,8 @@ fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
 }
 
 fn main() {
-    let ivory = Material::new(vek::Rgb::new(0.4, 0.4, 0.3));
-    let red_rubber = Material::new(vek::Rgb::new(0.3, 0.1, 0.1));
+    let ivory = Material::new([0.6, 0.3], vek::Rgb::new(0.4, 0.4, 0.3), 50.);
+    let red_rubber = Material::new([0.9, 0.1], vek::Rgb::new(0.3, 0.1, 0.1), 10.);
 
     let mut spheres = Vec::default();
     spheres.push(Sphere::new(vek::Vec3::new(-3., 0., -16.), 2., ivory));
@@ -162,6 +186,8 @@ fn main() {
 
     let mut lights = Vec::default();
     lights.push(Light::new(vek::Vec3::new(-20., 20., 20.), 1.5));
+    lights.push(Light::new(vek::Vec3::new(30., 50., -25.), 1.8));
+    lights.push(Light::new(vek::Vec3::new(30., 20., 30.), 1.7));
 
     render(&spheres, &lights);
 }
