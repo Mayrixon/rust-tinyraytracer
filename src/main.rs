@@ -2,6 +2,20 @@ use std::fs::*;
 use std::io::{prelude::*, BufWriter};
 use vek;
 
+struct Light {
+    position: vek::Vec3<f64>,
+    intensity: f64,
+}
+
+impl Light {
+    fn new(position: vek::Vec3<f64>, intensity: f64) -> Self {
+        Self {
+            position,
+            intensity,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Material {
     diffuse_color: vek::Rgb<f64>,
@@ -79,7 +93,12 @@ fn scene_intersect(
     return spheres_dist < 1000.;
 }
 
-fn cast_ray(orig: vek::Vec3<f64>, dir: vek::Vec3<f64>, spheres: &Vec<Sphere>) -> vek::Rgb<f64> {
+fn cast_ray(
+    orig: vek::Vec3<f64>,
+    dir: vek::Vec3<f64>,
+    spheres: &Vec<Sphere>,
+    lights: &Vec<Light>,
+) -> vek::Rgb<f64> {
     let mut point = vek::Vec3::<f64>::default();
     let mut N = vek::Vec3::<f64>::default();
     let mut material = Material::default();
@@ -87,11 +106,16 @@ fn cast_ray(orig: vek::Vec3<f64>, dir: vek::Vec3<f64>, spheres: &Vec<Sphere>) ->
     if !scene_intersect(orig, dir, spheres, &mut point, &mut N, &mut material) {
         return vek::Rgb::new(0.2, 0.7, 0.8);
     } else {
-        return material.diffuse_color;
+        let mut diffuse_light_intensity: f64 = 0.;
+        for i in 0..lights.len() {
+            let light_dir = (lights[i].position - point).normalized();
+            diffuse_light_intensity += lights[i].intensity * light_dir.dot(N).max(0.);
+        }
+        return material.diffuse_color * diffuse_light_intensity;
     }
 }
 
-fn render(spheres: &Vec<Sphere>) {
+fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
     const WIDTH: usize = 1024;
     const HEIGHT: usize = 768;
     const FOV: usize = std::f64::consts::FRAC_PI_2 as usize;
@@ -105,7 +129,7 @@ fn render(spheres: &Vec<Sphere>) {
                 / HEIGHT as f64;
             let y = -(2. * (j as f64 + 0.5) / HEIGHT as f64 - 1.) * (FOV as f64 / 2.).tan();
             let dir = vek::Vec3::new(x, y, -1.).normalized();
-            framebuffer[j][i] = cast_ray(vek::Vec3::zero(), dir, spheres);
+            framebuffer[j][i] = cast_ray(vek::Vec3::zero(), dir, spheres, lights);
         }
     }
 
@@ -136,5 +160,9 @@ fn main() {
     spheres.push(Sphere::new(vek::Vec3::new(1.5, -0.5, -18.), 3., red_rubber));
     spheres.push(Sphere::new(vek::Vec3::new(7., 5., -18.), 4., ivory));
 
-    render(&spheres);
+    let mut lights = Vec::default();
+    lights.push(Light::new(vek::Vec3::new(-20., 20., 20.), 1.5));
+
+    render(&spheres, &lights);
 }
+
