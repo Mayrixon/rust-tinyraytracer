@@ -197,10 +197,10 @@ fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
 
     for i in 0..HEIGHT {
         for j in 0..WIDTH {
-            let c = framebuffer[i][j];
+            let mut c = framebuffer[i][j];
             let max = c[0].max(c[1].max(c[2]));
             if max > 1. {
-                let c = c * (1. / max);
+                c = c * (1. / max);
             }
             for k in 0..3 {
                 let a = (255. * c[k].min(1.).max(0.)) as u8;
