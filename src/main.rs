@@ -122,6 +122,27 @@ fn cast_ray(
         let mut specular_light_intensity: f64 = 0.;
         for i in 0..lights.len() {
             let light_dir = (lights[i].position - point).normalized();
+            let light_distance = (lights[i].position - point).magnitude();
+
+            let shadow_orig = if light_dir.dot(N) < 0. {
+                point - N * 1e-3
+            } else {
+                point + N * 1e-3
+            };
+            let mut shadow_pt = vek::Vec3::<f64>::zero();
+            let mut shadow_N = vek::Vec3::<f64>::zero();
+            let mut tmp_material = Material::default();
+            if scene_intersect(
+                shadow_orig,
+                light_dir,
+                &spheres,
+                &mut shadow_pt,
+                &mut shadow_N,
+                &mut tmp_material,
+            ) && (shadow_pt - shadow_orig).magnitude() < light_distance
+            {
+                continue;
+            }
 
             diffuse_light_intensity += lights[i].intensity * light_dir.dot(N).max(0.);
             specular_light_intensity += reflect(light_dir, N)
