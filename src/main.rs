@@ -18,13 +18,13 @@ impl Light {
 
 #[derive(Clone, Copy)]
 struct Material {
-    albedo: [f64; 2],
+    albedo: [f64; 3],
     diffuse_color: vek::Rgb<f64>,
     specular_exponent: f64,
 }
 
 impl Material {
-    fn new(albedo: [f64; 2], color: vek::Rgb<f64>, specular_exponent: f64) -> Self {
+    fn new(albedo: [f64; 3], color: vek::Rgb<f64>, specular_exponent: f64) -> Self {
         Self {
             albedo,
             diffuse_color: color,
@@ -35,7 +35,7 @@ impl Material {
 
 impl Default for Material {
     fn default() -> Self {
-        let mut albedo = [0.; 2];
+        let mut albedo = [0.; 3];
         albedo[0] = 1.;
         Self {
             albedo,
@@ -110,14 +110,29 @@ fn cast_ray(
     dir: vek::Vec3<f64>,
     spheres: &Vec<Sphere>,
     lights: &Vec<Light>,
+    depth: &mut usize,
 ) -> vek::Rgb<f64> {
     let mut point = vek::Vec3::<f64>::default();
     let mut N = vek::Vec3::<f64>::default();
     let mut material = Material::default();
 
-    if !scene_intersect(orig, dir, spheres, &mut point, &mut N, &mut material) {
+    if *depth > 4 || !scene_intersect(orig, dir, spheres, &mut point, &mut N, &mut material) {
         return vek::Rgb::new(0.2, 0.7, 0.8);
     } else {
+        let reflect_dir = reflect(dir, N).normalized();
+        let reflect_orig = if reflect_dir.dot(N) < 0. {
+            point - N * 1e-3
+        } else {
+            point + N * 1e-3
+        };
+        let reflect_color = cast_ray(
+            reflect_orig,
+            reflect_dir,
+            spheres,
+            lights,
+            &mut (*depth + 1),
+        );
+
         let mut diffuse_light_intensity: f64 = 0.;
         let mut specular_light_intensity: f64 = 0.;
         for i in 0..lights.len() {
@@ -151,7 +166,8 @@ fn cast_ray(
                 .powf(material.specular_exponent);
         }
         return material.diffuse_color * diffuse_light_intensity * material.albedo[0]
-            + vek::Rgb::white() * specular_light_intensity * material.albedo[1];
+            + vek::Rgb::white() * specular_light_intensity * material.albedo[1]
+            + reflect_color * material.albedo[2];
     }
 }
 
@@ -169,7 +185,7 @@ fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
                 / HEIGHT as f64;
             let y = -(2. * (j as f64 + 0.5) / HEIGHT as f64 - 1.) * (FOV as f64 / 2.).tan();
             let dir = vek::Vec3::new(x, y, -1.).normalized();
-            framebuffer[j][i] = cast_ray(vek::Vec3::zero(), dir, spheres, lights);
+            framebuffer[j][i] = cast_ray(vek::Vec3::zero(), dir, spheres, lights, &mut 0);
         }
     }
 
@@ -196,14 +212,15 @@ fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
 }
 
 fn main() {
-    let ivory = Material::new([0.6, 0.3], vek::Rgb::new(0.4, 0.4, 0.3), 50.);
-    let red_rubber = Material::new([0.9, 0.1], vek::Rgb::new(0.3, 0.1, 0.1), 10.);
+    let ivory = Material::new([0.6, 0.3, 0.1], vek::Rgb::new(0.4, 0.4, 0.3), 50.);
+    let red_rubber = Material::new([0.9, 0.1, 0.0], vek::Rgb::new(0.3, 0.1, 0.1), 10.);
+    let mirror = Material::new([0.0, 10.0, 0.8], vek::Rgb::new(1.0, 1.0, 1.0), 1425.);
 
     let mut spheres = Vec::default();
     spheres.push(Sphere::new(vek::Vec3::new(-3., 0., -16.), 2., ivory));
-    spheres.push(Sphere::new(vek::Vec3::new(-1., -1.5, -12.), 2., red_rubber));
+    spheres.push(Sphere::new(vek::Vec3::new(-1., -1.5, -12.), 2., mirror));
     spheres.push(Sphere::new(vek::Vec3::new(1.5, -0.5, -18.), 3., red_rubber));
-    spheres.push(Sphere::new(vek::Vec3::new(7., 5., -18.), 4., ivory));
+    spheres.push(Sphere::new(vek::Vec3::new(7., 5., -18.), 4., mirror));
 
     let mut lights = Vec::default();
     lights.push(Light::new(vek::Vec3::new(-20., 20., 20.), 1.5));
