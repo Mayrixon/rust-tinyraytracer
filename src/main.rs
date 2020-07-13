@@ -72,10 +72,11 @@ impl Sphere {
             let t1 = tca + thc;
             if *t0 < 0. {
                 *t0 = t1;
-                return false;
-            } else {
-                return true;
             }
+            if *t0 < 0. {
+                return false;
+            }
+            return true;
         }
     }
 }
@@ -229,4 +230,3 @@ fn main() {
 
     render(&spheres, &lights);
 }
-
