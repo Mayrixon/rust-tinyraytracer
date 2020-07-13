@@ -18,14 +18,21 @@ impl Light {
 
 #[derive(Clone, Copy)]
 struct Material {
-    albedo: [f64; 3],
+    refractive_index: f64,
+    albedo: [f64; 4],
     diffuse_color: vek::Rgb<f64>,
     specular_exponent: f64,
 }
 
 impl Material {
-    fn new(albedo: [f64; 3], color: vek::Rgb<f64>, specular_exponent: f64) -> Self {
+    fn new(
+        refractive_index: f64,
+        albedo: [f64; 4],
+        color: vek::Rgb<f64>,
+        specular_exponent: f64,
+    ) -> Self {
         Self {
+            refractive_index,
             albedo,
             diffuse_color: color,
             specular_exponent,
@@ -35,9 +42,10 @@ impl Material {
 
 impl Default for Material {
     fn default() -> Self {
-        let mut albedo = [0.; 3];
+        let mut albedo = [0.; 4];
         albedo[0] = 1.;
         Self {
+            refractive_index: 1.,
             albedo,
             diffuse_color: vek::Rgb::black(),
             specular_exponent: 0.,
@@ -85,6 +93,26 @@ fn reflect(I: vek::Vec3<f64>, N: vek::Vec3<f64>) -> vek::Vec3<f64> {
     return I - 2. * N * I.dot(N);
 }
 
+fn refract(I: vek::Vec3<f64>, N: vek::Vec3<f64>, refractive_index: f64) -> vek::Vec3<f64> {
+    let mut cosi = -I.dot(N).max(-1.).min(1.);
+    // let mut cosi = -I.dot(N);
+    let mut etai = 1.0;
+    let mut etat = refractive_index;
+    let mut n = N;
+    if cosi < 0. {
+        cosi = -cosi;
+        std::mem::swap(&mut etai, &mut etat);
+        n = -n;
+    }
+    let eta = etai / etat;
+    let k = 1.0 - eta * eta * (1.0 - cosi * cosi);
+    if k < 0. {
+        return vek::Vec3::zero();
+    } else {
+        return I * eta + n * (eta * cosi - k.sqrt());
+    }
+}
+
 fn scene_intersect(
     orig: vek::Vec3<f64>,
     dir: vek::Vec3<f64>,
@@ -119,57 +147,70 @@ fn cast_ray(
 
     if *depth > 4 || !scene_intersect(orig, dir, spheres, &mut point, &mut N, &mut material) {
         return vek::Rgb::new(0.2, 0.7, 0.8);
+    }
+    let reflect_dir = reflect(dir, N).normalized();
+    let refract_dir = refract(dir, N, material.refractive_index).normalized();
+    let reflect_orig = if reflect_dir.dot(N) < 0. {
+        point - N * 1e-3
     } else {
-        let reflect_dir = reflect(dir, N).normalized();
-        let reflect_orig = if reflect_dir.dot(N) < 0. {
+        point + N * 1e-3
+    };
+    let refract_orig = if refract_dir.dot(N) < 0. {
+        point - N * 1e-3
+    } else {
+        point + N * 1e-3
+    };
+    let reflect_color = cast_ray(
+        reflect_orig,
+        reflect_dir,
+        spheres,
+        lights,
+        &mut (*depth + 1),
+    );
+    let refract_color = cast_ray(
+        refract_orig,
+        refract_dir,
+        spheres,
+        lights,
+        &mut (*depth + 1),
+    );
+
+    let mut diffuse_light_intensity: f64 = 0.;
+    let mut specular_light_intensity: f64 = 0.;
+    for i in 0..lights.len() {
+        let light_dir = (lights[i].position - point).normalized();
+        let light_distance = (lights[i].position - point).magnitude();
+
+        let shadow_orig = if light_dir.dot(N) < 0. {
             point - N * 1e-3
         } else {
             point + N * 1e-3
         };
-        let reflect_color = cast_ray(
-            reflect_orig,
-            reflect_dir,
-            spheres,
-            lights,
-            &mut (*depth + 1),
-        );
-
-        let mut diffuse_light_intensity: f64 = 0.;
-        let mut specular_light_intensity: f64 = 0.;
-        for i in 0..lights.len() {
-            let light_dir = (lights[i].position - point).normalized();
-            let light_distance = (lights[i].position - point).magnitude();
-
-            let shadow_orig = if light_dir.dot(N) < 0. {
-                point - N * 1e-3
-            } else {
-                point + N * 1e-3
-            };
-            let mut shadow_pt = vek::Vec3::<f64>::zero();
-            let mut shadow_N = vek::Vec3::<f64>::zero();
-            let mut tmp_material = Material::default();
-            if scene_intersect(
-                shadow_orig,
-                light_dir,
-                &spheres,
-                &mut shadow_pt,
-                &mut shadow_N,
-                &mut tmp_material,
-            ) && (shadow_pt - shadow_orig).magnitude() < light_distance
-            {
-                continue;
-            }
-
-            diffuse_light_intensity += lights[i].intensity * light_dir.dot(N).max(0.);
-            specular_light_intensity += reflect(light_dir, N)
-                .dot(dir)
-                .max(0.)
-                .powf(material.specular_exponent);
+        let mut shadow_pt = vek::Vec3::<f64>::zero();
+        let mut shadow_N = vek::Vec3::<f64>::zero();
+        let mut tmp_material = Material::default();
+        if scene_intersect(
+            shadow_orig,
+            light_dir,
+            &spheres,
+            &mut shadow_pt,
+            &mut shadow_N,
+            &mut tmp_material,
+        ) && (shadow_pt - shadow_orig).magnitude() < light_distance
+        {
+            continue;
         }
-        return material.diffuse_color * diffuse_light_intensity * material.albedo[0]
-            + vek::Rgb::white() * specular_light_intensity * material.albedo[1]
-            + reflect_color * material.albedo[2];
+
+        diffuse_light_intensity += lights[i].intensity * light_dir.dot(N).max(0.);
+        specular_light_intensity += reflect(light_dir, N)
+            .dot(dir)
+            .max(0.)
+            .powf(material.specular_exponent);
     }
+    return material.diffuse_color * diffuse_light_intensity * material.albedo[0]
+        + vek::Rgb::white() * specular_light_intensity * material.albedo[1]
+        + reflect_color * material.albedo[2]
+        + refract_color * material.albedo[3];
 }
 
 fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
@@ -213,13 +254,24 @@ fn render(spheres: &Vec<Sphere>, lights: &Vec<Light>) {
 }
 
 fn main() {
-    let ivory = Material::new([0.6, 0.3, 0.1], vek::Rgb::new(0.4, 0.4, 0.3), 50.);
-    let red_rubber = Material::new([0.9, 0.1, 0.0], vek::Rgb::new(0.3, 0.1, 0.1), 10.);
-    let mirror = Material::new([0.0, 10.0, 0.8], vek::Rgb::new(1.0, 1.0, 1.0), 1425.);
+    let ivory = Material::new(1.0, [0.6, 0.3, 0.1, 0.0], vek::Rgb::new(0.4, 0.4, 0.3), 50.);
+    let glass = Material::new(
+        1.5,
+        [0.0, 0.5, 0.1, 0.8],
+        vek::Rgb::new(0.6, 0.7, 0.8),
+        125.,
+    );
+    let red_rubber = Material::new(1.0, [0.9, 0.1, 0.0, 0.0], vek::Rgb::new(0.3, 0.1, 0.1), 10.);
+    let mirror = Material::new(
+        1.0,
+        [0.0, 10.0, 0.8, 0.0],
+        vek::Rgb::new(1.0, 1.0, 1.0),
+        1425.,
+    );
 
     let mut spheres = Vec::default();
     spheres.push(Sphere::new(vek::Vec3::new(-3., 0., -16.), 2., ivory));
-    spheres.push(Sphere::new(vek::Vec3::new(-1., -1.5, -12.), 2., mirror));
+    spheres.push(Sphere::new(vek::Vec3::new(-1., -1.5, -12.), 2., glass));
     spheres.push(Sphere::new(vek::Vec3::new(1.5, -0.5, -18.), 3., red_rubber));
     spheres.push(Sphere::new(vek::Vec3::new(7., 5., -18.), 4., mirror));
 
