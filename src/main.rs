@@ -131,7 +131,25 @@ fn scene_intersect(
             *material = spheres[i].material;
         }
     }
-    return spheres_dist < 1000.;
+
+    let mut checkerboard_dist = std::f64::MAX;
+    if dir.y.abs() > 1e-3 {
+        let d = -(orig.y + 4.) / dir.y;
+        let pt = orig + dir * d;
+        if d > 0. && pt.x.abs() < 10. && pt.z < -10. && pt.z > -30. && d < spheres_dist {
+            checkerboard_dist = d;
+            *hit = pt;
+            *N = vek::Vec3::new(0., 1., 0.);
+            material.diffuse_color =
+                if ((0.5 * hit.x + 1000.) as isize + (0.5 * hit.z) as isize) & 1 == 1 {
+                    vek::Rgb::new(0.3, 0.3, 0.3)
+                } else {
+                    vek::Rgb::new(0.3, 0.2, 0.1)
+                };
+        }
+    }
+
+    return spheres_dist.min(checkerboard_dist) < 1000.;
 }
 
 fn cast_ray(
