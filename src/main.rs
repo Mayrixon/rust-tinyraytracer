@@ -17,6 +17,18 @@ impl Light {
     }
 }
 
+#[derive(Default)]
+struct Ray {
+    origin: Vec3<f64>,
+    direction: Vec3<f64>,
+}
+
+impl Ray {
+    fn new(origin: Vec3<f64>, direction: Vec3<f64>) -> Self {
+        Self { origin, direction }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Material {
     refractive_index: f64,
@@ -67,9 +79,9 @@ impl Sphere {
         }
     }
 
-    fn ray_intersect(&self, orig: &Vec3<f64>, dir: &Vec3<f64>) -> Option<f64> {
-        let v_l = self.center - orig;
-        let tca = v_l.dot(*dir);
+    fn intersect(&self, ray: &Ray) -> Option<f64> {
+        let v_l = self.center - ray.origin;
+        let tca = v_l.dot(ray.direction);
         let d2 = v_l.dot(v_l) - tca * tca;
         let radius2 = self.radius * self.radius;
 
@@ -112,22 +124,19 @@ fn refract(v_in: &Vec3<f64>, v_normal: &Vec3<f64>, refractive_index: f64) -> Vec
     }
 }
 
-fn scene_intersect(
-    orig: &Vec3<f64>,
-    dir: &Vec3<f64>,
-    spheres: &[Sphere],
-) -> Option<(Vec3<f64>, Vec3<f64>, Material)> {
+fn scene_intersect(ray: &Ray, spheres: &[Sphere]) -> Option<(Vec3<f64>, Vec3<f64>, Material)> {
     let mut hit = Vec3::default();
     let mut v_normal = Vec3::default();
     let mut material = Material::default();
     let mut spheres_dist = f64::MAX;
 
     for sphere in spheres {
-        let dist_i = sphere.ray_intersect(orig, dir);
+        let dist_i = sphere.intersect(ray);
+
         if let Some(dist_i) = dist_i {
             if dist_i < spheres_dist {
                 spheres_dist = dist_i;
-                hit = orig + dir * dist_i;
+                hit = ray.origin + ray.direction * dist_i;
                 v_normal = (hit - sphere.center).normalized();
                 material = sphere.material;
             }
@@ -135,9 +144,9 @@ fn scene_intersect(
     }
 
     let mut checkerboard_dist = f64::MAX;
-    if dir.y.abs() > 1e-3 {
-        let d = -(orig.y + 4.) / dir.y;
-        let pt = orig + dir * d;
+    if ray.direction.y.abs() > 1e-3 {
+        let d = -(ray.origin.y + 4.) / ray.direction.y;
+        let pt = ray.origin + ray.direction * d;
         if d > 0. && pt.x.abs() < 10. && pt.z < -10. && pt.z > -30. && d < spheres_dist {
             checkerboard_dist = d;
             hit = pt;
@@ -166,22 +175,19 @@ fn offset_point(point: &Vec3<f64>, normal: &Vec3<f64>, dot_product: f64) -> Vec3
     }
 }
 
-fn cast_ray(
-    orig: &Vec3<f64>,
-    dir: &Vec3<f64>,
-    spheres: &[Sphere],
-    lights: &[Light],
-    depth: usize,
-) -> (Rgb<f64>, usize) {
+fn cast_ray(ray: &Ray, spheres: &[Sphere], lights: &[Light], depth: usize) -> (Rgb<f64>, usize) {
     if depth > 4 {
         (Rgb::new(0.2, 0.7, 0.8), depth)
-    } else if let Some((point, v_normal, material)) = scene_intersect(orig, dir, spheres) {
-        let reflect_dir = reflect(dir, &v_normal).normalized();
-        let refract_dir = refract(dir, &v_normal, material.refractive_index).normalized();
+    } else if let Some((point, v_normal, material)) = scene_intersect(ray, spheres) {
+        let reflect_dir = reflect(&ray.direction, &v_normal).normalized();
+        let refract_dir =
+            refract(&ray.direction, &v_normal, material.refractive_index).normalized();
         let reflect_orig = offset_point(&point, &v_normal, reflect_dir.dot(v_normal));
         let refract_orig = offset_point(&point, &v_normal, refract_dir.dot(v_normal));
-        let (reflect_color, _) = cast_ray(&reflect_orig, &reflect_dir, spheres, lights, depth + 1);
-        let (refract_color, _) = cast_ray(&refract_orig, &refract_dir, spheres, lights, depth + 1);
+        let reflect_ray = Ray::new(reflect_orig, reflect_dir);
+        let refract_ray = Ray::new(refract_orig, refract_dir);
+        let (reflect_color, _) = cast_ray(&reflect_ray, spheres, lights, depth + 1);
+        let (refract_color, _) = cast_ray(&refract_ray, spheres, lights, depth + 1);
 
         let mut diffuse_light_intensity: f64 = 0.;
         let mut specular_light_intensity: f64 = 0.;
@@ -191,7 +197,9 @@ fn cast_ray(
             let light_distance = v_light.magnitude();
 
             let shadow_orig = offset_point(&point, &v_normal, light_dir.dot(v_normal));
-            if let Some((shadow_pt, _, _)) = scene_intersect(&shadow_orig, &light_dir, spheres) {
+            if let Some((shadow_pt, _, _)) =
+                scene_intersect(&Ray::new(shadow_orig, light_dir), spheres)
+            {
                 if (shadow_pt - shadow_orig).magnitude() < light_distance {
                     continue;
                 }
@@ -199,7 +207,7 @@ fn cast_ray(
 
             diffuse_light_intensity += light.intensity * light_dir.dot(v_normal).max(0.);
             specular_light_intensity += reflect(&light_dir, &v_normal)
-                .dot(*dir)
+                .dot(ray.direction)
                 .max(0.)
                 .powf(material.specular_exponent);
         }
@@ -230,7 +238,8 @@ fn render(spheres: &[Sphere], lights: &[Light]) {
             let x = (2. * (i as f64 + 0.5) / WIDTH as f64 - 1.) * scale * aspect_ratio;
             let y = -(2. * (j as f64 + 0.5) / HEIGHT as f64 - 1.) * scale;
             let dir = Vec3::new(x, y, -1.).normalized();
-            (*pixel, _) = cast_ray(&Vec3::zero(), &dir, spheres, lights, 0);
+            let ray = Ray::new(Vec3::zero(), dir);
+            (*pixel, _) = cast_ray(&ray, spheres, lights, 0);
         }
     }
 
