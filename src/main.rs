@@ -1,5 +1,5 @@
 use std::fs::*;
-use std::io::{BufWriter, prelude::*};
+use std::io::{BufWriter, Result, prelude::*};
 
 use vek::{Rgb, Vec3};
 
@@ -136,11 +136,104 @@ fn refract(v_in: &Vec3<f64>, v_normal: &Vec3<f64>, refractive_index: f64) -> Vec
 
 struct Scene {
     spheres: Vec<Sphere>,
+    lights: Vec<Light>,
 }
 
 impl Scene {
-    fn new(spheres: Vec<Sphere>) -> Self {
-        Self { spheres }
+    fn new(spheres: Vec<Sphere>, lights: Vec<Light>) -> Self {
+        Self { spheres, lights }
+    }
+
+    fn cast_ray(&self, ray: &Ray, depth: usize) -> (Rgb<f64>, usize) {
+        if depth > 4 {
+            return (Rgb::new(0.2, 0.7, 0.8), depth);
+        };
+
+        if let Some((point, v_normal, material)) = self.intersect(ray) {
+            let reflect_dir = reflect(&ray.direction, &v_normal).normalized();
+            let refract_dir =
+                refract(&ray.direction, &v_normal, material.refractive_index).normalized();
+
+            let reflect_orig = offset_point(&point, &v_normal, reflect_dir.dot(v_normal));
+            let refract_orig = offset_point(&point, &v_normal, refract_dir.dot(v_normal));
+
+            let reflect_ray = Ray::new(reflect_orig, reflect_dir);
+            let refract_ray = Ray::new(refract_orig, refract_dir);
+
+            let (reflect_color, _) = self.cast_ray(&reflect_ray, depth + 1);
+            let (refract_color, _) = self.cast_ray(&refract_ray, depth + 1);
+
+            let mut diffuse_light_intensity: f64 = 0.;
+            let mut specular_light_intensity: f64 = 0.;
+
+            for light in &self.lights {
+                let v_light = light.position - point;
+                let light_dir = v_light.normalized();
+                let light_distance = v_light.magnitude();
+
+                let shadow_orig = offset_point(&point, &v_normal, light_dir.dot(v_normal));
+                if let Some((shadow_pt, _, _)) = self.intersect(&Ray::new(shadow_orig, light_dir)) {
+                    if (shadow_pt - shadow_orig).magnitude() < light_distance {
+                        continue;
+                    }
+                }
+
+                let light_dot_normal = light_dir.dot(v_normal).max(0.0);
+                diffuse_light_intensity += light.intensity * light_dot_normal;
+
+                let reflect_light_dir = reflect(&light_dir, &v_normal);
+                let specular_factor = reflect_light_dir
+                    .dot(ray.direction)
+                    .max(0.0)
+                    .powf(material.specular_exponent);
+                specular_light_intensity += light.intensity * specular_factor;
+            }
+
+            let color = material.diffuse_color * diffuse_light_intensity * material.albedo[0]
+                + Rgb::white() * specular_light_intensity * material.albedo[1]
+                + reflect_color * material.albedo[2]
+                + refract_color * material.albedo[3];
+            (color, depth)
+        } else {
+            (Rgb::new(0.2, 0.7, 0.8), depth)
+        }
+    }
+
+    fn render(&self) -> Result<()> {
+        const WIDTH: usize = 1024;
+        const HEIGHT: usize = 768;
+        const FOV: usize = std::f64::consts::FRAC_PI_2 as usize;
+        let mut framebuffer = vec![vec![Rgb::<f64>::zero(); WIDTH]; HEIGHT];
+
+        let aspect_ratio = WIDTH as f64 / HEIGHT as f64;
+        let scale = (FOV as f64 / 2.).tan();
+
+        for (j, row) in framebuffer.iter_mut().enumerate() {
+            for (i, pixel) in row.iter_mut().enumerate() {
+                let x = (2. * (i as f64 + 0.5) / WIDTH as f64 - 1.) * scale * aspect_ratio;
+                let y = -(2. * (j as f64 + 0.5) / HEIGHT as f64 - 1.) * scale;
+                let dir = Vec3::new(x, y, -1.).normalized();
+                let ray = Ray::new(Vec3::zero(), dir);
+                (*pixel, _) = self.cast_ray(&ray, 0);
+            }
+        }
+
+        let file = File::create("./target/out.ppm")?;
+        let mut buffer = BufWriter::new(file);
+        buffer.write_fmt(format_args!("P6\n{} {}\n255\n", WIDTH, HEIGHT))?;
+
+        for row in framebuffer {
+            for pixel in row {
+                let max = pixel.iter().fold(0.0, |acc: f64, &x| acc.max(x));
+                let scaled_pixel = if max > 1. { pixel / max } else { pixel };
+                let a = scaled_pixel
+                    .iter()
+                    .map(|x| (255. * x.clamp(0., 1.)) as u8)
+                    .collect::<Rgb<u8>>();
+                buffer.write_all(&a)?;
+            }
+        }
+        buffer.flush()
     }
 }
 impl Intersect for Scene {
@@ -198,94 +291,6 @@ fn offset_point(point: &Vec3<f64>, normal: &Vec3<f64>, dot_product: f64) -> Vec3
     }
 }
 
-fn cast_ray(ray: &Ray, spheres: &[Sphere], lights: &[Light], depth: usize) -> (Rgb<f64>, usize) {
-    let scene = Scene::new(spheres.to_vec());
-
-    if depth > 4 {
-        (Rgb::new(0.2, 0.7, 0.8), depth)
-    } else if let Some((point, v_normal, material)) = scene.intersect(ray) {
-        let reflect_dir = reflect(&ray.direction, &v_normal).normalized();
-        let refract_dir =
-            refract(&ray.direction, &v_normal, material.refractive_index).normalized();
-        let reflect_orig = offset_point(&point, &v_normal, reflect_dir.dot(v_normal));
-        let refract_orig = offset_point(&point, &v_normal, refract_dir.dot(v_normal));
-        let reflect_ray = Ray::new(reflect_orig, reflect_dir);
-        let refract_ray = Ray::new(refract_orig, refract_dir);
-        let (reflect_color, _) = cast_ray(&reflect_ray, spheres, lights, depth + 1);
-        let (refract_color, _) = cast_ray(&refract_ray, spheres, lights, depth + 1);
-
-        let mut diffuse_light_intensity: f64 = 0.;
-        let mut specular_light_intensity: f64 = 0.;
-        for light in lights {
-            let v_light = light.position - point;
-            let light_dir = v_light.normalized();
-            let light_distance = v_light.magnitude();
-
-            let shadow_orig = offset_point(&point, &v_normal, light_dir.dot(v_normal));
-            if let Some((shadow_pt, _, _)) = scene.intersect(&Ray::new(shadow_orig, light_dir)) {
-                if (shadow_pt - shadow_orig).magnitude() < light_distance {
-                    continue;
-                }
-            }
-
-            diffuse_light_intensity += light.intensity * light_dir.dot(v_normal).max(0.);
-            specular_light_intensity += reflect(&light_dir, &v_normal)
-                .dot(ray.direction)
-                .max(0.)
-                .powf(material.specular_exponent);
-        }
-
-        (
-            material.diffuse_color * diffuse_light_intensity * material.albedo[0]
-                + Rgb::white() * specular_light_intensity * material.albedo[1]
-                + reflect_color * material.albedo[2]
-                + refract_color * material.albedo[3],
-            depth,
-        )
-    } else {
-        (Rgb::new(0.2, 0.7, 0.8), depth)
-    }
-}
-
-fn render(spheres: &[Sphere], lights: &[Light]) {
-    const WIDTH: usize = 1024;
-    const HEIGHT: usize = 768;
-    const FOV: usize = std::f64::consts::FRAC_PI_2 as usize;
-    let mut framebuffer = vec![vec![Rgb::<f64>::zero(); WIDTH]; HEIGHT];
-
-    let aspect_ratio = WIDTH as f64 / HEIGHT as f64;
-    let scale = (FOV as f64 / 2.).tan();
-
-    for (j, row) in framebuffer.iter_mut().enumerate() {
-        for (i, pixel) in row.iter_mut().enumerate() {
-            let x = (2. * (i as f64 + 0.5) / WIDTH as f64 - 1.) * scale * aspect_ratio;
-            let y = -(2. * (j as f64 + 0.5) / HEIGHT as f64 - 1.) * scale;
-            let dir = Vec3::new(x, y, -1.).normalized();
-            let ray = Ray::new(Vec3::zero(), dir);
-            (*pixel, _) = cast_ray(&ray, spheres, lights, 0);
-        }
-    }
-
-    let file = File::create("./target/out.ppm").unwrap();
-    let mut buffer = BufWriter::new(file);
-    buffer
-        .write_fmt(format_args!("P6\n{} {}\n255\n", WIDTH, HEIGHT))
-        .unwrap();
-
-    for row in framebuffer {
-        for pixel in row {
-            let max = pixel.iter().fold(0.0, |acc: f64, &x| acc.max(x));
-            let scaled_pixel = if max > 1. { pixel / max } else { pixel };
-            let a = scaled_pixel
-                .iter()
-                .map(|x| (255. * x.clamp(0., 1.)) as u8)
-                .collect::<Rgb<u8>>();
-            buffer.write_all(&a).unwrap();
-        }
-    }
-    buffer.flush().unwrap();
-}
-
 fn main() {
     let ivory = Material::new(1.0, [0.6, 0.3, 0.1, 0.0], Rgb::new(0.4, 0.4, 0.3), 50.);
     let glass = Material::new(1.5, [0.0, 0.5, 0.1, 0.8], Rgb::new(0.6, 0.7, 0.8), 125.);
@@ -305,5 +310,6 @@ fn main() {
         Light::new(Vec3::new(30., 20., 30.), 1.7),
     ];
 
-    render(&spheres, &lights);
+    let scene = Scene::new(spheres, lights);
+    scene.render().unwrap();
 }
